@@ -6,7 +6,7 @@ Based on upstream work from [HazAT/pi-interactive-subagents](https://github.com/
 
 ## Features
 
-- **Multiplexed Agent Sessions**: Run multiple agents simultaneously in separate tmux panes
+- **Multiplexed Agent Sessions**: Run multiple agents simultaneously in separate cmux panes
 - **Automatic Result Collection**: Results are automatically delivered as steer messages when agents complete
 - **Persistent Naming**: Named agents can be messaged even after they finish
 - **Status Tracking**: Real-time status monitoring of running subagents
@@ -54,6 +54,22 @@ const available = await subagents_list();
 
 - cmux must be installed and available in your PATH
 - Pi coding agent framework
+
+## Testing
+
+To run the integration tests, you need a usable authenticated model:
+
+```bash
+PI_TEST_MODEL=<provider/model> npm run test:integration
+```
+
+For example, with Qwen Cloud:
+
+```bash
+PI_TEST_MODEL=qwen-cloud/qwen3-coder-plus npm run test:integration
+```
+
+Note that the integration test requires a model provider to be authenticated and accessible.
 
 ## License
 
