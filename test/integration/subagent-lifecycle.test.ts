@@ -2,14 +2,14 @@
  * Integration tests for the full subagent lifecycle.
  *
  * These tests spawn REAL pi sessions with REAL LLM calls (haiku by default).
- * Each test creates a tmux pane, runs pi with a task that uses the subagent
+ * Each test creates a cmux surface, runs pi with a task that uses the subagent
  * tool, and verifies the outcome via marker files and screen output.
  *
  * Costs: ~$0.01-0.05 per test run (haiku).
  * Duration: ~30-90s per test.
  *
- * Run inside tmux:
- *   tmux new 'npm run test:integration'
+ * Run inside cmux:
+ *   cmux bash -c 'npm run test:integration'
  *
  * Configuration:
  *   PI_TEST_MODEL     — model for all pi sessions (default: anthropic/claude-haiku-4-5)
@@ -37,8 +37,8 @@ import {
 const backends = getAvailableBackends();
 
 if (backends.length === 0) {
-  console.log("⚠️  tmux is not available — skipping subagent lifecycle integration tests");
-  console.log("   Run inside tmux to enable these tests.");
+  console.log("⚠️  cmux is not available — skipping subagent lifecycle integration tests");
+  console.log("   Run inside cmux to enable these tests.");
 }
 
 for (const backend of backends) {
@@ -201,9 +201,9 @@ for (const backend of backends) {
       const task = [
         `Call the subagent tool with these EXACT parameters:`,
         `  name: "Fork-${id}"`,
-        `  fork: true`,
+        `  agent: "test-fork"`,
         `  task: "Run this bash command: echo 'FORK_OK_${id}' > '${markerFile}'"`,
-        `Do not set the agent parameter. Just set name, fork, and task.`,
+        `The test-fork agent profile selects fork session mode.`,
         `After you receive the result, say FORK_COMPLETE.`,
       ].join("\n");
 
@@ -238,36 +238,30 @@ for (const backend of backends) {
       }
     });
 
-    // ── caller_ping ──
+    // ── ask_question + parent reply ──
 
-    it("subagent caller_ping sends notification back to the parent", async () => {
+    it("subagent ask_question receives a parent reply and continues", async () => {
       const id = uniqueId();
+      const markerFile = `/tmp/pi-integ-question-${id}.txt`;
+      trackTempFile(env, markerFile);
 
-      const surface = createTrackedSurface(env, `ping-${id}`);
+      const surface = createTrackedSurface(env, `question-${id}`);
       await sleep(1000);
 
       const task = [
         `Call the subagent tool with these EXACT parameters:`,
-        `  name: "Ping-${id}"`,
+        `  name: "Question-${id}"`,
         `  agent: "test-ping"`,
-        `  task: "PING_TEST_${id}"`,
-        `Just call the subagent tool once. Do not do anything else before calling it.`,
+        `  task: "After approval, run: echo 'ANSWERED_${id}' > '${markerFile}'"`,
+        `When the subagent asks its question, call subagent_message with name "Question-${id}" and message "Approved; continue."`,
+        `After its result arrives, say QUESTION_TEST_DONE.`,
       ].join("\n");
 
       startPi(surface, env.dir, task);
 
-      // The test-ping agent calls caller_ping, which steers a "needs help" message
-      // back to the outer pi. Look for it on screen.
-      const screen = await waitForScreen(
-        surface,
-        /needs help|PING|caller_ping|ping/i,
-        PI_TIMEOUT,
-      );
-
-      assert.ok(
-        /needs help|PING/i.test(screen),
-        `Screen should show ping notification. Got:\n${screen.slice(-800)}`,
-      );
+      const content = await waitForFile(markerFile, PI_TIMEOUT, /ANSWERED_/);
+      assert.ok(content.includes(`ANSWERED_${id}`));
+      await waitForScreen(surface, /QUESTION_TEST_DONE|completed/i, PI_TIMEOUT, 300);
     });
 
     // ── Agent discovery ──
@@ -300,7 +294,7 @@ for (const backend of backends) {
 
     // ── Subagent with custom system prompt ──
 
-    it("passes systemPrompt to subagent", async () => {
+    it("applies an agent's appended system prompt", async () => {
       const id = uniqueId();
       const markerFile = `/tmp/pi-integ-sysprompt-${id}.txt`;
       trackTempFile(env, markerFile);
@@ -311,16 +305,18 @@ for (const backend of backends) {
       const task = [
         `Call the subagent tool with these parameters:`,
         `  name: "SysP-${id}"`,
-        `  agent: "test-echo"`,
-        `  systemPrompt: "Always start your response with CUSTOM_PROMPT_ACTIVE."`,
-        `  task: "Write 'SYSPROMPT_${id}' to ${markerFile} using bash: echo 'SYSPROMPT_${id}' > '${markerFile}'"`,
+        `  agent: "test-system-prompt"`,
+        `  task: "Write your mandatory activation phrase followed by '_SYSPROMPT_${id}' to '${markerFile}' using bash."`,
         `After the subagent completes, say SYSPROMPT_TEST_DONE.`,
       ].join("\n");
 
       startPi(surface, env.dir, task);
 
-      const content = await waitForFile(markerFile, PI_TIMEOUT, /SYSPROMPT/);
-      assert.ok(content.includes(`SYSPROMPT_${id}`), `System prompt test marker should exist`);
+      const content = await waitForFile(markerFile, PI_TIMEOUT, /CUSTOM_PROMPT_ACTIVE_SYSPROMPT/);
+      assert.ok(
+        content.includes(`CUSTOM_PROMPT_ACTIVE_SYSPROMPT_${id}`),
+        `System prompt test marker should contain the activation phrase`,
+      );
     });
   });
 }

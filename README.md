@@ -1,12 +1,139 @@
 # pi-interactive-subagents
 
-Async subagents for [pi](https://github.com/badlogic/pi-mono), running in tmux panes. Spawn a sub-agent, keep working in the main session, and get the result steered back when it finishes. Fully non-blocking.
+Async subagents for [pi](https://github.com/badlogic/pi-mono), running in cmux surfaces. Spawn a sub-agent, keep working in the main session, and get the result steered back when it finishes. Fully non-blocking.
 
-**tmux-only fork.** See [Acknowledgements](#acknowledgements) for the upstream project, which also supports cmux, zellij, and WezTerm.
+**cmux-only fork.** See [Acknowledgements](#acknowledgements) for the upstream project, which also supports tmux, zellij, and WezTerm.
+
+## Quick start
+
+### 1. Prerequisites
+
+Install and configure:
+
+- [pi](https://github.com/badlogic/pi-mono)
+- [cmux](https://github.com/manaflow-ai/cmux)
+- At least one model provider usable by pi
+
+Confirm both commands are available:
+
+```bash
+pi --version
+cmux --version
+```
+
+### 2. Install this local checkout
+
+From the repository directory:
+
+```bash
+cd /Users/sean/pi-interactive-subagents
+npm install
+pi install "$(pwd)"
+```
+
+This is a user-level installation, so it is available in every pi project. Pi references the checkout directly rather than copying it.
+
+Confirm the package is registered:
+
+```bash
+pi list
+```
+
+The output should include the resolved path:
+
+```text
+/Users/sean/pi-interactive-subagents
+```
+
+### 3. Resolve a `pi-subagents` conflict
+
+This extension and `npm:pi-subagents` both register a tool named `subagent`, so their extensions cannot be enabled together. You may keep the `pi-subagents` skills and prompts by disabling only its extension in `~/.pi/agent/settings.json`:
+
+```json
+{
+  "source": "npm:pi-subagents",
+  "extensions": []
+}
+```
+
+Use that object in the `packages` array instead of the plain `"npm:pi-subagents"` entry. Alternatively, remove the conflicting package completely:
+
+```bash
+pi remove npm:pi-subagents
+```
+
+Other cmux packages are fine as long as they do not register `subagent`, `subagent_message`, or `subagents_list`.
+
+### 4. Start pi inside cmux
+
+Open a terminal surface in cmux, then run:
+
+```bash
+pi
+```
+
+The extension requires `CMUX_SOCKET_PATH` and `CMUX_SURFACE_ID`, which cmux supplies automatically to its terminal surfaces. Running pi in Terminal.app, iTerm, or a plain shell outside cmux will show a setup error when you try to spawn an agent.
+
+### 5. Try a subagent
+
+In pi, run:
+
+```text
+/subagent scout Inspect the README and summarize its installation steps
+```
+
+Expected behavior:
+
+1. A pane opens on the right without taking keyboard focus.
+2. The scout runs in a named cmux tab in that pane.
+3. Its status appears above the main pi editor.
+4. The result returns to the main session automatically.
+
+A second subagent opens as another tab in the same right-side pane.
+
+### Updating
+
+The installation points directly at this checkout. After pulling or editing code, start a new pi session or run `/reload`; you do not need to reinstall the package.
+
+```bash
+cd /Users/sean/pi-interactive-subagents
+git pull
+npm install
+```
+
+### Uninstalling
+
+```bash
+pi remove /Users/sean/pi-interactive-subagents
+```
+
+Then confirm removal with `pi list`.
+
+### Troubleshooting
+
+**“Tool `subagent` conflicts with …”**
+
+Disable or remove the other package that registers `subagent`; see step 3.
+
+**“cmux is required for subagents”**
+
+Start pi from a terminal surface inside cmux. Check that `echo "$CMUX_SOCKET_PATH"` and `echo "$CMUX_SURFACE_ID"` are non-empty.
+
+**A pane opens but the command never starts**
+
+Increase the shell startup delay before starting pi:
+
+```bash
+export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500
+```
+
+**A bundled agent cannot authenticate to its model**
+
+The bundled definitions use models configured in `agents/*.md`. Select models available through your configured pi providers, or create a project/global agent definition as described below.
 
 ## How it works
 
-`subagent()` returns immediately. The sub-agent runs in its own tmux pane — a right split off the parent pi pane, so pane creation never steals keyboard focus. A live widget above the input tracks every running sub-agent, and when one finishes, its result is steered into the main session as a notification that triggers a new turn.
+`subagent()` returns immediately. The first sub-agent creates a right split off the parent pi surface; later sub-agents open as tabs in that same pane. Surface creation preserves keyboard focus. A live widget above the input tracks every running sub-agent, and when one finishes, its result is steered into the main session as a notification that triggers a new turn.
 
 ```
 ╭─ Subagents ──────────────────────────── 2 running ─╮
@@ -17,7 +144,7 @@ Async subagents for [pi](https://github.com/badlogic/pi-mono), running in tmux p
 
 Spawn several in parallel — they run concurrently and steer results back independently as each finishes.
 
-Panes are kept evenly sized: the extension re-applies an `even-horizontal` layout after every spawn and exit (debounced). The layout is a single constant, `SUBAGENT_TMUX_LAYOUT` in `pi-extension/subagents/tmux.ts` — change it to any named tmux layout (`main-vertical`, `tiled`, …).
+cmux manages the split layout. Closing one sub-agent tab leaves the shared sub-agent pane available to the remaining tabs; if that pane disappears, the next spawn creates a fresh right split.
 
 If your shell startup is slow and launch commands get dropped before the prompt is ready, raise the delay:
 
@@ -29,7 +156,7 @@ export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500   # default: 500
 
 | Tool | Description |
 | --- | --- |
-| `subagent` | Spawn a sub-agent in a dedicated tmux pane (async) |
+| `subagent` | Spawn a sub-agent in a dedicated cmux surface (async) |
 | `subagent_message` | Message a sub-agent by name — steers it if running, resumes its session if finished |
 | `subagents_list` | List available agent definitions |
 | `ask_question` | *(sub-agent sessions only)* Ask the orchestrator a question and wait for the reply |
@@ -173,15 +300,6 @@ Status display is configured via `config.json` in the extension directory (copy 
 {
   "status": { "enabled": true }
 }
-```
-
-## Requirements
-
-- [pi](https://github.com/badlogic/pi-mono)
-- [tmux](https://github.com/tmux/tmux)
-
-```bash
-tmux new -A -s pi 'pi'
 ```
 
 ## Acknowledgements

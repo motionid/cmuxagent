@@ -2,9 +2,9 @@
  * Integration test harness for pi-interactive-subagents.
  *
  * Provides utilities to:
- * - Detect whether tmux is available
+ * - Detect whether cmux is available
  * - Create isolated test environments with test agent definitions
- * - Start real pi sessions in tmux panes
+ * - Start real pi sessions in cmux surfaces
  * - Poll for file creation and screen output
  * - Clean up panes and temp files after tests
  */
@@ -17,6 +17,7 @@ import {
   rmSync,
   existsSync,
   readFileSync,
+  writeFileSync,
   unlinkSync,
 } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -32,9 +33,9 @@ import {
   readScreenAsync,
   closeSurface,
   shellEscape,
-} from "../../pi-extension/subagents/tmux.ts";
+} from "../../pi-extension/subagents/cmux.ts";
 
-// Re-export tmux primitives for tests
+// Re-export cmux primitives for tests
 export {
   createSurface,
   createSurfaceSplit,
@@ -68,32 +69,50 @@ const EXTENSION_SOURCE = join(PROJECT_ROOT, "pi-extension", "subagents", "index.
 // ── Configuration ──
 
 /** Model used for integration tests. Override with PI_TEST_MODEL env var. */
-export const TEST_MODEL = process.env.PI_TEST_MODEL ?? "anthropic/claude-haiku-4-5";
+const inheritedModel =
+  process.env.PI_PROVIDER && process.env.PI_MODEL
+    ? `${process.env.PI_PROVIDER}/${process.env.PI_MODEL}`
+    : undefined;
+export const TEST_MODEL =
+  process.env.PI_TEST_MODEL ?? inheritedModel ?? "anthropic/claude-haiku-4-5";
 
 /** Per-test timeout in ms. Override with PI_TEST_TIMEOUT env var. */
 export const PI_TIMEOUT = Number(process.env.PI_TEST_TIMEOUT ?? "120000");
 
 // ── Backend detection ──
 
-/**
- * Detect whether tmux is available in the current environment.
- * Returns ["tmux"] or [].
- */
+/** Detect whether cmux is available in the current environment. */
 export function getAvailableBackends(): string[] {
-  return isMuxAvailable() ? ["tmux"] : [];
+  return isMuxAvailable() ? ["cmux"] : [];
 }
 
 export function focusSurface(surface: string): void {
-  execFileSync("tmux", ["select-pane", "-t", surface], { encoding: "utf8" });
+  const pane = getSurfacePane(surface);
+  if (pane) execFileSync("cmux", ["focus-pane", "--pane", pane], { encoding: "utf8" });
+  execFileSync("cmux", ["focus-panel", "--panel", surface], { encoding: "utf8" });
 }
 
 export function getFocusedSurface(): string | null {
   try {
-    const panes = execFileSync("tmux", ["list-panes", "-F", "#{pane_id} #{pane_active}"], {
-      encoding: "utf8",
-    });
-    const activeLine = panes.split("\n").find((line) => line.endsWith(" 1"));
-    return activeLine?.split(" ")[0] ?? null;
+    const identity = JSON.parse(
+      execFileSync("cmux", ["identify", "--json"], { encoding: "utf8" }),
+    );
+    return typeof identity?.focused?.surface_ref === "string"
+      ? identity.focused.surface_ref
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getSurfacePane(surface: string): string | null {
+  try {
+    const identity = JSON.parse(
+      execFileSync("cmux", ["identify", "--surface", surface, "--json"], {
+        encoding: "utf8",
+      }),
+    );
+    return typeof identity?.caller?.pane_ref === "string" ? identity.caller.pane_ref : null;
   } catch {
     return null;
   }
@@ -110,7 +129,7 @@ export async function waitForFocusedSurface(
   }
 
   throw new Error(
-    `Timeout (${timeout}ms) waiting for focused tmux pane ${surface}; ` +
+    `Timeout (${timeout}ms) waiting for focused cmux surface ${surface}; ` +
       `current focus is ${getFocusedSurface() ?? "unknown"}`,
   );
 }
@@ -139,7 +158,13 @@ export function createTestEnv(): TestEnv {
   if (existsSync(TEST_AGENTS_SRC)) {
     for (const file of readdirSync(TEST_AGENTS_SRC)) {
       if (file.endsWith(".md")) {
-        cpSync(join(TEST_AGENTS_SRC, file), join(agentsDir, file));
+        const destination = join(agentsDir, file);
+        cpSync(join(TEST_AGENTS_SRC, file), destination);
+        const definition = readFileSync(destination, "utf8").replace(
+          /^model:\s*.+$/m,
+          `model: ${TEST_MODEL}`,
+        );
+        writeFileSync(destination, definition, "utf8");
       }
     }
   }

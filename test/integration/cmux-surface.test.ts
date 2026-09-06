@@ -1,16 +1,17 @@
 /**
- * Integration tests for the tmux surface layer.
+ * Integration tests for the cmux surface layer.
  *
- * These tests exercise real tmux operations: creating panes,
+ * These tests exercise real cmux operations: creating surfaces,
  * sending commands, reading screen output, and closing panes.
  * No LLM calls — fast and free.
  *
- * Run inside tmux:
- *   tmux new 'npm run test:integration'
+ * Run inside cmux:
+ *   cmux bash -c 'npm run test:integration'
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { unlinkSync } from "node:fs";
+import { pollForExit } from "../../pi-extension/subagents/cmux.ts";
 import {
   getAvailableBackends,
   createTestEnv,
@@ -19,6 +20,7 @@ import {
   createTrackedSurfaceSplit,
   focusSurface,
   getFocusedSurface,
+  getSurfacePane,
   waitForFocusedSurface,
   untrackSurface,
   sendCommand,
@@ -38,12 +40,12 @@ const backends = getAvailableBackends();
 const FOCUS_TEST_SHELL_READY_DELAY_MS = Number(process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS ?? "2500");
 
 if (backends.length === 0) {
-  console.log("⚠️  tmux is not available — skipping tmux-surface integration tests");
-  console.log("   Run inside tmux to enable these tests.");
+  console.log("⚠️  cmux is not available — skipping cmux-surface integration tests");
+  console.log("   Run inside cmux to enable these tests.");
 }
 
 for (const backend of backends) {
-  describe(`tmux-surface [${backend}]`, { timeout: 60_000 }, () => {
+  describe(`cmux-surface [${backend}]`, { timeout: 60_000 }, () => {
     let env: TestEnv;
 
     before(() => {
@@ -62,23 +64,22 @@ for (const backend of backends) {
       await waitForFocusedSurface(anchor, 10_000);
 
       const childA = createTrackedSurface(env, "focus-child-a");
-      await sleep(FOCUS_TEST_SHELL_READY_DELAY_MS);
       assert.equal(getFocusedSurface(), anchor);
 
       const childB = createTrackedSurface(env, "focus-child-b");
-      await sleep(FOCUS_TEST_SHELL_READY_DELAY_MS);
       assert.equal(getFocusedSurface(), anchor);
+      await sleep(FOCUS_TEST_SHELL_READY_DELAY_MS);
 
       const markerA = uniqueId();
       const markerB = uniqueId();
       sendCommand(childA, `echo "FOCUS_A_${markerA}"`);
       sendCommand(childB, `echo "FOCUS_B_${markerB}"`);
+      assert.equal(getFocusedSurface(), anchor);
 
       await Promise.all([
         waitForScreen(childA, new RegExp(`FOCUS_A_${markerA}`), 20_000, 50),
         waitForScreen(childB, new RegExp(`FOCUS_B_${markerB}`), 20_000, 50),
       ]);
-      assert.equal(getFocusedSurface(), anchor);
     });
 
     it("creates a surface, sends a command, reads output, and closes it", async () => {
@@ -162,6 +163,12 @@ for (const backend of backends) {
       const s2 = createTrackedSurface(env, "multi-2");
       await sleep(1500);
 
+      assert.equal(
+        getSurfacePane(s1),
+        getSurfacePane(s2),
+        "subsequent subagents should open as tabs in the shared cmux pane",
+      );
+
       const m1 = uniqueId();
       const m2 = uniqueId();
       sendCommand(s1, `echo "S1_${m1}"`);
@@ -175,12 +182,50 @@ for (const backend of backends) {
       assert.ok(screen2.includes(`S2_${m2}`), `Surface 2 missing marker. Got:\n${screen2}`);
     });
 
+    it("stops polling when a subagent surface is closed manually", async () => {
+      const surface = createTrackedSurface(env, "manual-close-test");
+      await sleep(500);
+      closeSurface(surface);
+      untrackSurface(env, surface);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      try {
+        const result = await pollForExit(surface, controller.signal, { interval: 50 });
+        assert.equal(result.reason, "error");
+        assert.match(result.errorMessage ?? "", /closed|missing|unavailable/i);
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+
+    it("recreates the shared pane after its last surface is closed", async () => {
+      const first = createTrackedSurface(env, "stale-pane-first");
+      await sleep(500);
+      closeSurface(first);
+      untrackSurface(env, first);
+
+      const replacement = createTrackedSurface(env, "stale-pane-replacement");
+      await sleep(500);
+      const marker = uniqueId();
+      sendCommand(replacement, `echo "RECREATED_${marker}"`);
+      await waitForScreen(replacement, new RegExp(`RECREATED_${marker}`), 10_000, 50);
+    });
+
+    it("allows cleanup to close an already-closed surface", async () => {
+      const surface = createTrackedSurface(env, "idempotent-close-test");
+      await sleep(500);
+      closeSurface(surface);
+      assert.doesNotThrow(() => closeSurface(surface));
+      untrackSurface(env, surface);
+    });
+
     it("writes output to a file and verifies via surface", async () => {
       const surface = createTrackedSurface(env, "file-test");
       await sleep(1000);
 
       const marker = uniqueId();
-      const filePath = `/tmp/pi-tmux-test-${marker}.txt`;
+      const filePath = `/tmp/pi-cmux-test-${marker}.txt`;
 
       sendCommand(surface, `echo "FILE_${marker}" > ${filePath} && echo "WRITTEN_${marker}"`);
 

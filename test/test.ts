@@ -1,7 +1,7 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { visibleWidth } from "@mariozechner/pi-tui";
@@ -30,7 +30,15 @@ import {
   summarizeSessionStats,
 } from "../pi-extension/subagents/session.ts";
 
-import { shellEscape } from "../pi-extension/subagents/tmux.ts";
+import { shellEscape } from "../pi-extension/subagents/cmux.ts";
+import * as cmuxSurface from "../pi-extension/subagents/cmux.ts";
+
+it("provides a cmux-only surface module", () => {
+  assert.equal(
+    existsSync(join(process.cwd(), "pi-extension", "subagents", "cmux.ts")),
+    true,
+  );
+});
 import {
   advanceStatusState,
   capStatusLines,
@@ -56,7 +64,7 @@ import {
   runningChildrenCount,
 } from "../pi-extension/subagents/subagent-done.ts";
 import subagentDoneExtension from "../pi-extension/subagents/subagent-done.ts";
-import { __pollForExitTest__ } from "../pi-extension/subagents/tmux.ts";
+import { __pollForExitTest__ } from "../pi-extension/subagents/cmux.ts";
 
 // --- Helpers ---
 
@@ -1206,13 +1214,19 @@ describe("subagent discovery", () => {
     }
   });
 
-  it("getToolExtensionPath maps custom tools and skips built-ins", () => {
-    assert.equal(testApi.getToolExtensionPath("read"), undefined);
-    assert.equal(testApi.getToolExtensionPath("bash"), undefined);
-    assert.ok(testApi.getToolExtensionPath("web_search")?.endsWith("web-search/index.ts"));
-    assert.ok(testApi.getToolExtensionPath("safe_bash")?.endsWith("tools/safe-bash.ts"));
-    // Spawning tools are registered by this extension itself.
-    assert.ok(testApi.getToolExtensionPath("subagent")?.endsWith("index.ts"));
+  it("getToolExtensionPath maps existing custom tools and skips built-ins", async () => {
+    await withIsolatedAgentEnv(async ({ globalDir }) => {
+      const webSearchPath = join(globalDir, "extensions", "web-search", "index.ts");
+      mkdirSync(dirname(webSearchPath), { recursive: true });
+      writeFileSync(webSearchPath, "export default function () {}\n");
+
+      assert.equal(testApi.getToolExtensionPath("read"), undefined);
+      assert.equal(testApi.getToolExtensionPath("bash"), undefined);
+      assert.equal(testApi.getToolExtensionPath("web_search"), webSearchPath);
+      assert.ok(testApi.getToolExtensionPath("safe_bash")?.endsWith("tools/safe-bash.ts"));
+      // Spawning tools are registered by this extension itself.
+      assert.ok(testApi.getToolExtensionPath("subagent")?.endsWith("index.ts"));
+    });
   });
 
   it("ignores invalid session-mode values", async () => {
@@ -1741,7 +1755,7 @@ describe("subagent-done.ts", () => {
   });
 });
 
-describe("tmux.ts interpretExitSidecar", () => {
+describe("cmux.ts interpretExitSidecar", () => {
   const { interpretExitSidecar } = __pollForExitTest__;
 
   it("no longer decodes ping payloads (ask_question keeps the session open instead)", () => {
@@ -2652,7 +2666,158 @@ describe("subagent display helpers", () => {
   });
 });
 
-describe("tmux.ts", () => {
+describe("cmux.ts", () => {
+  it("wires the extension and package metadata to cmux only", () => {
+    const indexSource = readFileSync(join(process.cwd(), "pi-extension", "subagents", "index.ts"), "utf8");
+    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    assert.match(indexSource, /from "\.\/cmux\.ts"/);
+    assert.doesNotMatch(indexSource, /tmux/i);
+    assert.match(packageJson.description, /cmux/i);
+  });
+
+  it("exports cmux availability and identify parsers", () => {
+    for (const name of [
+      "isCmuxAvailable",
+      "parseCmuxJson",
+      "parseCmuxFocusedSnapshot",
+      "parseCmuxFocusedSnapshotFromJson",
+      "parseCmuxPaneRefForSurface",
+      "parseCmuxPaneRefForSurfaceFromJson",
+      "cmuxTreeHasPane",
+      "cmuxFocusMatches",
+      "shouldRestoreCmuxFocus",
+      "shouldRetryMissingCmuxPane",
+    ]) {
+      assert.equal(typeof (cmuxSurface as any)[name], "function", `expected ${name} export`);
+    }
+  });
+
+  describe("cmux identify parsing", () => {
+    it("parses valid JSON and rejects malformed JSON", () => {
+      assert.deepEqual(cmuxSurface.parseCmuxJson('{"ok":true}'), { ok: true });
+      assert.equal(cmuxSurface.parseCmuxJson("not json"), null);
+    });
+
+    it("extracts focused surface and pane refs without falling back to caller", () => {
+      assert.deepEqual(
+        cmuxSurface.parseCmuxFocusedSnapshot({
+          caller: { surface_ref: "surface:1", pane_ref: "pane:1" },
+          focused: { surface_ref: "surface:3", pane_ref: "pane:2" },
+        }),
+        { surfaceRef: "surface:3", paneRef: "pane:2" },
+      );
+      assert.equal(
+        cmuxSurface.parseCmuxFocusedSnapshot({
+          caller: { surface_ref: "surface:1", pane_ref: "pane:1" },
+        }),
+        null,
+      );
+      assert.equal(cmuxSurface.parseCmuxFocusedSnapshotFromJson("not json"), null);
+    });
+
+    it("extracts a pane ref only for the requested surface", () => {
+      assert.equal(
+        cmuxSurface.parseCmuxPaneRefForSurface(
+          { caller: { surface_ref: "surface:7", pane_ref: "pane:4" } },
+          "surface:7",
+        ),
+        "pane:4",
+      );
+      assert.equal(
+        cmuxSurface.parseCmuxPaneRefForSurface(
+          { surface_ref: "surface:8", pane_ref: "pane:4" },
+          "surface:7",
+        ),
+        null,
+      );
+      assert.equal(
+        cmuxSurface.parseCmuxPaneRefForSurfaceFromJson(
+          '{"surface_ref":"surface:7","pane_ref":"pane:5"}',
+          "surface:7",
+        ),
+        "pane:5",
+      );
+    });
+  });
+
+  describe("focus restoration matching", () => {
+    it("prefers surface identity over a shared pane identity", () => {
+      assert.equal(
+        (cmuxSurface as any).cmuxFocusMatches(
+          { surfaceRef: "surface:2", paneRef: "pane:1" },
+          { surfaceRef: "surface:1", paneRef: "pane:1" },
+        ),
+        false,
+      );
+      assert.equal(
+        (cmuxSurface as any).cmuxFocusMatches(
+          { surfaceRef: "surface:1", paneRef: "pane:1" },
+          { surfaceRef: "surface:1", paneRef: "pane:1" },
+        ),
+        true,
+      );
+      assert.equal(
+        (cmuxSurface as any).cmuxFocusMatches(
+          { paneRef: "pane:1" },
+          { paneRef: "pane:1" },
+        ),
+        true,
+      );
+    });
+
+    it("restores only when cmux focused the newly created surface", () => {
+      const child = { surface: "surface:9", paneRef: "pane:9" };
+      assert.equal(
+        (cmuxSurface as any).shouldRestoreCmuxFocus(
+          { surfaceRef: "surface:9", paneRef: "pane:9" },
+          child,
+        ),
+        true,
+      );
+      assert.equal(
+        (cmuxSurface as any).shouldRestoreCmuxFocus(
+          { surfaceRef: "surface:1", paneRef: "pane:1" },
+          child,
+        ),
+        false,
+      );
+      assert.equal((cmuxSurface as any).shouldRestoreCmuxFocus(null, child), false);
+    });
+  });
+
+  describe("tracked subagent pane validation", () => {
+    it("matches exact pane refs rather than numeric prefixes", () => {
+      const tree = "├── pane pane:10\n│   └── surface surface:12\n";
+      assert.equal((cmuxSurface as any).cmuxTreeHasPane(tree, "pane:10"), true);
+      assert.equal((cmuxSurface as any).cmuxTreeHasPane(tree, "pane:1"), false);
+    });
+
+    it("retries only when a successful tree response confirms the pane is absent", () => {
+      assert.equal((cmuxSurface as any).shouldRetryMissingCmuxPane(null, "pane:10"), false);
+      assert.equal(
+        (cmuxSurface as any).shouldRetryMissingCmuxPane("pane pane:10\n", "pane:10"),
+        false,
+      );
+      assert.equal(
+        (cmuxSurface as any).shouldRetryMissingCmuxPane("pane pane:11\n", "pane:10"),
+        true,
+      );
+    });
+  });
+
+  describe("isCmuxAvailable", () => {
+    it("requires CMUX_SOCKET_PATH and reports the active cmux runtime", () => {
+      const previous = process.env.CMUX_SOCKET_PATH;
+      delete process.env.CMUX_SOCKET_PATH;
+      assert.equal(cmuxSurface.isCmuxAvailable(), false);
+      restoreEnvVar("CMUX_SOCKET_PATH", previous);
+      if (previous) {
+        assert.equal(cmuxSurface.isCmuxAvailable(), true);
+        assert.equal(cmuxSurface.isMuxAvailable(), true);
+      }
+    });
+  });
+
   describe("shellEscape", () => {
     it("wraps in single quotes", () => {
       assert.equal(shellEscape("hello"), "'hello'");
