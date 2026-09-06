@@ -2,6 +2,8 @@
 
 A Pi subagent extension that enables multiplexed agent sessions using cmux. This package allows you to spawn multiple subagents in dedicated terminal panes that run concurrently, with automatic result collection and delivery.
 
+Based on upstream work from [HazAT/pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents).
+
 ## Features
 
 - **Multiplexed Agent Sessions**: Run multiple agents simultaneously in separate tmux panes
@@ -12,7 +14,13 @@ A Pi subagent extension that enables multiplexed agent sessions using cmux. This
 
 ## Installation
 
-This is a Pi extension package. Install it by placing it in your Pi extensions directory.
+To install this package, you must have Pi and cmux already on your PATH, a model provider authenticated, and Pi must be launched inside a cmux terminal surface.
+
+```bash
+pi install git:github.com/motionid/cmuxagent@v1
+cmux hooks pi install
+pi
+```
 
 ## Usage
 
