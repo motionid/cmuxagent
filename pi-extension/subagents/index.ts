@@ -26,6 +26,9 @@ import {
   readScreen,
 } from "./cmux.ts";
 
+// Import model resolution from Task 1 config module
+import { resolveModel } from "./model-config.ts";
+
 import {
   countSessionEntryLines,
   findLastAssistantMessage,
@@ -1174,7 +1177,32 @@ async function launchSubagent(
   const id = Math.random().toString(16).slice(2, 10);
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null;
-  const effectiveModel = params.model ?? agentDefs?.model;
+  
+  // Get parent model from the current session manager context
+  let parentModel: string | undefined;
+  try {
+    // Attempt to get parent model from environment
+    parentModel = process.env.PI_MODEL || undefined;
+  } catch (e) {
+    // If we can't get parent model, continue without it
+    parentModel = undefined;
+  }
+  
+  // Get available models - for now use a basic set
+  const availableModels = ["claude-sonnet-4-6", "gpt-4o", "claude-haiku-4-5", "openrouter/z-ai/glm-5.3"];
+  
+  // Use the model resolution logic from Task 1
+  const resolvedModel = resolveModel({
+    explicit: params.model,
+    project: undefined, // No project-specific model for now
+    global: undefined,  // No global model override for now
+    profile: agentDefs?.model,  // Model from agent profile (may be undefined)
+    parent: parentModel,  // Model from parent session
+    available: availableModels,
+    trustedProject: true, // Assume trusted project for this context
+  });
+  
+  const effectiveModel = resolvedModel;
   const effectiveTools = agentDefs?.tools;
   const effectiveSkills = agentDefs?.skills;
   const effectiveThinking = agentDefs?.thinking;
@@ -2318,6 +2346,92 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         };
       },
     });
+
+  // /subagent-setup command — configure subagent model overrides
+  pi.registerCommand("subagent-setup", {
+    description: "Configure subagent model overrides: /subagent-setup [global|project] [scout|researcher|worker] [model-name|Inherit parent model]",
+    handler: async (args, ctx) => {
+      const trimmed = args.trim();
+      
+      if (!trimmed) {
+        // Display current model configuration
+        ctx.ui.notify(
+          "Current subagent model setup: Use '/subagent-setup global' or '/subagent-setup project' followed by agent and model selection",
+          "info"
+        );
+        return;
+      }
+      
+      const parts = trimmed.split(" ");
+      if (parts.length < 3) {
+        ctx.ui.notify(
+          "Usage: /subagent-setup [global|project] [scout|researcher|worker|all] [model-name|Inherit parent model]",
+          "warning"
+        );
+        return;
+      }
+      
+      const scope = parts[0];
+      const agent = parts[1];
+      const modelSelection = parts.slice(2).join(" ");
+      
+      if (scope !== "global" && scope !== "project") {
+        ctx.ui.notify("First argument must be 'global' or 'project'", "error");
+        return;
+      }
+      
+      if (agent !== "scout" && agent !== "researcher" && agent !== "worker" && agent !== "all") {
+        ctx.ui.notify("Second argument must be 'scout', 'researcher', 'worker', or 'all'", "error");
+        return;
+      }
+      
+      // Determine the config path based on scope
+      let configPath: string;
+      if (scope === "project") {
+        configPath = join(process.cwd(), ".pi", "subagent-models.json");
+      } else {
+        const agentConfigDir = getAgentConfigDir();
+        configPath = join(agentConfigDir, "subagent-models.json");
+      }
+      
+      // Prepare model overrides
+      const overrides = {};
+      const targetAgents = agent === "all" ? ["scout", "researcher", "worker"] : [agent];
+      
+      for (const targetAgent of targetAgents) {
+        if (modelSelection === "Inherit parent model") {
+          // Don't add an override, so it will inherit from parent
+          continue;
+        } else {
+          overrides[targetAgent] = modelSelection;
+        }
+      }
+      
+      // Read existing config if it exists
+      let existingConfig = {};
+      try {
+        if (existsSync(configPath)) {
+          const content = readFileSync(configPath, "utf8");
+          existingConfig = JSON.parse(content);
+        }
+      } catch (e) {
+        // If there's an error reading the file, start with empty config
+        existingConfig = {};
+      }
+      
+      // Update the config with new overrides
+      existingConfig.models = { ...existingConfig.models, ...overrides };
+      
+      // Write the updated config
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), "utf8");
+      
+      ctx.ui.notify(
+        `Updated ${scope} model configuration for ${agent}: ${modelSelection}. Config saved to ${configPath}`,
+        "success"
+      );
+    },
+  });
 
   // /subagent command — spawn a subagent by name
   pi.registerCommand("subagent", {
