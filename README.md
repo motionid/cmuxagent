@@ -38,8 +38,8 @@ and resume integration; it does not add credentials or model configuration.
 | `researcher` | External facts, API docs, and comparisons | Web search and sourced research briefs |
 | `worker` | Implementing or debugging a defined task | Reads, edits, tests, and may delegate to scout/researcher |
 
-The bundled profiles default to `openrouter/z-ai/glm-5.3`. Override the model
-at launch if it is not available through your Pi configuration.
+The bundled profiles default to inheriting the parent session's model. Override the model
+at launch if a specific model is needed.
 
 ## Start an agent
 
@@ -132,6 +132,39 @@ subagent({
 Give a worker its exact repository, allowed scope, acceptance criteria, and
 validation command. A child starts with no parent-conversation context.
 
+#### Configure model overrides
+
+Use `/subagent-setup` to configure model overrides for bundled agents:
+
+```text
+/subagent-setup [global|project] [scout|researcher|worker|all] [model-name|Inherit parent model]
+```
+
+Examples:
+
+```text
+/subagent-setup global scout claude-sonnet-4-6
+/subagent-setup project worker "Inherit parent model"
+/subagent-setup global all gpt-4o
+```
+
+Configuration precedence order:
+1. Explicit `subagent({ model })` value (direct model override)
+2. Trusted project override from `.pi/cmuxagent/config.json`
+3. Global override from `~/.pi/cmuxagent/config.json`
+4. Profile's explicit `model` value (for custom profiles)
+5. The parent session model (default behavior: "Inherit parent model")
+
+The setup command only writes cmuxagent configuration and never changes Pi's global model settings, authentication, or provider catalogue.
+
+**Portable defaults:** By default, all bundled agents inherit the parent session's model. This ensures consistent behavior and prevents unexpected costs from higher-tier models being enabled accidentally. Use `/subagent-setup` to customize defaults per agent type.
+
+**Config locations:** 
+- Global config: `~/.pi/cmuxagent/config.json`
+- Project config: `.pi/cmuxagent/config.json` (takes precedence when project is trusted)
+
+**Trusted project precedence:** Project-level configurations take precedence over global configurations only when the project is considered trusted. This prevents malicious project configurations from overriding your preferred global settings.
+
 #### Run independent agents in parallel
 
 Send separate calls without waiting between them:
@@ -203,7 +236,7 @@ Project profiles override global and bundled profiles with the same `name`.
 ---
 name: security-reviewer
 description: Read-only security review
-model: qwen-cloud/qwen3-coder-plus
+model: qwen-cloud/qwen3-coder-plus  # Optional: if omitted, uses parent session model
 thinking: medium
 tools: read, grep, find, ls
 auto-exit: true
@@ -219,6 +252,8 @@ Then run:
 ```text
 /subagent security-reviewer Review the authentication changes.
 ```
+
+Custom profiles can specify a fixed model, or omit the `model` field to inherit the parent session's model.
 
 ## Troubleshooting
 
