@@ -1,0 +1,25 @@
+{
+  "name": "cmuxagent",
+  "version": "1.0.0",
+  "description": "A Pi subagent extension that enables multiplexed agent sessions using cmux",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "author": "Sean",
+  "license": "MIT",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./pi-extension/subagents/index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/cmuxagent.git"
+  }
+}
