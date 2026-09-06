@@ -70,6 +70,90 @@ Each child gets a unique name, a visible cmux surface, and an isolated Pi
 session. The parent receives its final response when it completes; do not poll
 terminal output or session files for completion.
 
+### Spawn reference
+
+The slash-command form is:
+
+```text
+/subagent <agent> <task>
+```
+
+`<agent>` is required and comes first. Everything after its first space is the
+task. For example:
+
+```text
+/subagent scout Find where user sessions are created and list the relevant tests.
+```
+
+The tool-call form accepts an object. `agent` and `task` are required; the
+other fields are optional. Object field order does not matter.
+
+| Field | Required | Meaning | Example |
+| --- | --- | --- | --- |
+| `agent` | Yes | Profile to run | `"scout"` |
+| `task` | Yes | Complete, self-contained assignment | `"Map the auth flow."` |
+| `name` | No | Stable display/follow-up name; duplicates are suffixed | `"auth-map"` |
+| `model` | No | Overrides the profile's default model | `"qwen-cloud/qwen3-coder-plus"` |
+| `cwd` | No | Child working directory | `"/Users/me/project"` |
+
+#### Recon before planning
+
+```ts
+subagent({
+  agent: "scout",
+  name: "payments-recon",
+  task: "Inspect the payments flow. Report entry points, data models, external services, and relevant tests. Do not edit files.",
+  cwd: "/Users/me/project",
+});
+```
+
+#### Research an external decision
+
+```ts
+subagent({
+  agent: "researcher",
+  name: "oauth-research",
+  task: "Compare the current OAuth 2.1 PKCE guidance from official sources. Return a short sourced recommendation for a TypeScript web app.",
+  model: "qwen-cloud/qwen3-coder-plus",
+});
+```
+
+#### Implement a bounded change
+
+```ts
+subagent({
+  agent: "worker",
+  name: "add-rate-limit",
+  task: "Add rate limiting to POST /api/login. Preserve existing behavior, add focused tests, run them, and report changed files and results.",
+  cwd: "/Users/me/project",
+});
+```
+
+Give a worker its exact repository, allowed scope, acceptance criteria, and
+validation command. A child starts with no parent-conversation context.
+
+#### Run independent agents in parallel
+
+Send separate calls without waiting between them:
+
+```ts
+subagent({ agent: "scout", name: "api-map", task: "Map the API routes and their tests." });
+subagent({ agent: "researcher", name: "rate-limit-research", task: "Find official guidance for rate-limit response headers." });
+```
+
+Use distinct names and non-overlapping assignments. Results arrive separately.
+
+#### Override or add a profile
+
+Create a project-local `.pi/agents/api-reviewer.md` profile, then use it just
+like a bundled agent:
+
+```text
+/subagent api-reviewer Review the API error-handling changes for consistency.
+```
+
+See [Custom profiles](#custom-profiles) for the profile format.
+
 ## Follow up or resume
 
 Use the same name to send more work:
