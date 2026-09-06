@@ -135,3 +135,31 @@ test('resolveModel returns undefined when no models provided', () => {
     undefined
   );
 });
+
+test('resolveModel ignores untrusted project config and falls back to global', () => {
+  assert.equal(
+    resolveModel({ 
+      project: "project-model",
+      global: "global-model",
+      profile: "profile-model",
+      parent: "parent-model",
+      available: ["project-model", "global-model", "profile-model", "parent-model"],
+      trustedProject: false
+    }), 
+    "global-model"
+  );
+});
+
+test('resolveModel uses trusted project config when available', () => {
+  assert.equal(
+    resolveModel({ 
+      project: "project-model",
+      global: "global-model",
+      profile: "profile-model",
+      parent: "parent-model",
+      available: ["project-model", "global-model", "profile-model", "parent-model"],
+      trustedProject: true
+    }), 
+    "project-model"
+  );
+});

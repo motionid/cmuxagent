@@ -13,6 +13,7 @@ export interface ResolutionParams {
   profile?: string;
   parent?: string;
   available: string[];
+  trustedProject?: boolean;
 }
 
 /**
@@ -51,17 +52,28 @@ export function loadModelOverrides(configPath: string): ModelOverrides | null {
 
 /**
  * Resolves the appropriate model based on priority order:
- * explicit -> project -> global -> profile -> parent
+ * explicit -> project (if trusted) -> global -> profile -> parent
  * Only returns models that are available in the available array
  */
 export function resolveModel(params: ResolutionParams): string | undefined {
-  const { explicit, project, global, profile, parent, available } = params;
+  const { explicit, project, global, profile, parent, available, trustedProject } = params;
   
   // Convert available array to Set for faster lookups
   const availableSet = new Set(available);
   
+  // Build the priority chain, conditionally including project based on trust
+  const priorityChain = [explicit];
+  
+  // Only add project if trustedProject is true or if trustedProject is undefined (backward compatibility)
+  if ((trustedProject === true || trustedProject === undefined) && project) {
+    priorityChain.push(project);
+  }
+  
+  // Add remaining sources in order
+  priorityChain.push(global, profile, parent);
+  
   // Check each source in priority order
-  for (const model of [explicit, project, global, profile, parent]) {
+  for (const model of priorityChain) {
     if (model && availableSet.has(model)) {
       return model;
     }
