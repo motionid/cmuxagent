@@ -25,6 +25,15 @@ import {
   shellEscape,
   readScreen,
 } from "./cmux.ts";
+import {
+  BUNDLED_AGENT_ROLES,
+  loadModelOverrides,
+  resolveModel,
+  updateModelOverride,
+  writeModelOverrides,
+  type BundledAgentRole,
+  type ModelResolution,
+} from "./model-config.ts";
 
 import {
   countSessionEntryLines,
@@ -169,6 +178,83 @@ const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", 
 /** Resolve the global agent config directory, respecting PI_CODING_AGENT_DIR. */
 function getAgentConfigDir(): string {
   return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+}
+
+const INHERIT_PARENT_MODEL = "Inherit parent model";
+
+type ModelSelectionContext = Pick<
+  ExtensionContext,
+  "cwd" | "model" | "scopedModels" | "modelRegistry" | "isProjectTrusted"
+>;
+
+type SetupSelections = Partial<Record<BundledAgentRole, string | null>>;
+
+export function canonicalModelRef(model: { provider: string; id: string }): string {
+  return `${model.provider}/${model.id}`;
+}
+
+export function availableModelRefs(ctx: ModelSelectionContext): string[] {
+  const models = ctx.scopedModels.length > 0
+    ? ctx.scopedModels.map((entry) => entry.model)
+    : ctx.modelRegistry.getAvailable();
+  return [...new Set(models.map(canonicalModelRef))].sort();
+}
+
+function isBundledAgentRole(role: string): role is BundledAgentRole {
+  return (BUNDLED_AGENT_ROLES as readonly string[]).includes(role);
+}
+
+export function resolveConfiguredSubagentModel(options: {
+  explicit?: string;
+  role: string;
+  profile?: string;
+  ctx: ModelSelectionContext;
+  homeDirectory?: string;
+}): ModelResolution {
+  const { ctx } = options;
+  const trustedProject = ctx.isProjectTrusted();
+  const role = isBundledAgentRole(options.role) ? options.role : undefined;
+  const globalOverrides = loadModelOverrides(
+    join(options.homeDirectory ?? homedir(), ".pi", "cmuxagent", "config.json"),
+  );
+  const projectOverrides = trustedProject
+    ? loadModelOverrides(join(ctx.cwd, ".pi", "cmuxagent", "config.json"))
+    : { models: {} };
+
+  return resolveModel({
+    explicit: options.explicit,
+    project: role ? projectOverrides.models[role] : undefined,
+    global: role ? globalOverrides.models[role] : undefined,
+    profile: options.profile,
+    parent: ctx.model ? canonicalModelRef(ctx.model) : undefined,
+    available: availableModelRefs(ctx),
+    trustedProject,
+  });
+}
+
+export function saveModelSetup(options: {
+  scope: "global" | "project";
+  selections: SetupSelections;
+  homeDirectory: string;
+  cwd: string;
+  trustedProject: boolean;
+}): { ok: true; path: string } | { ok: false; reason: "cancelled" | "untrusted-project" } {
+  if (options.scope === "project" && !options.trustedProject) {
+    return { ok: false, reason: "untrusted-project" };
+  }
+  if (BUNDLED_AGENT_ROLES.some((role) => !Object.hasOwn(options.selections, role))) {
+    return { ok: false, reason: "cancelled" };
+  }
+
+  const configPath = options.scope === "global"
+    ? join(options.homeDirectory, ".pi", "cmuxagent", "config.json")
+    : join(options.cwd, ".pi", "cmuxagent", "config.json");
+  let overrides = loadModelOverrides(configPath);
+  for (const role of BUNDLED_AGENT_ROLES) {
+    overrides = updateModelOverride(overrides, role, options.selections[role] ?? undefined);
+  }
+  writeModelOverrides(configPath, overrides);
+  return { ok: true, path: configPath };
 }
 
 // ── Runtime tool-extension registration ─────────────────────────────────────
@@ -1150,6 +1236,10 @@ export const __test__ = {
   contextWindowFor,
   formatUsageSegments,
   widgetIcon,
+  canonicalModelRef,
+  availableModelRefs,
+  resolveConfiguredSubagentModel,
+  saveModelSetup,
 };
 
 function startWidgetRefresh() {
@@ -1169,14 +1259,28 @@ function startWidgetRefresh() {
  */
 async function launchSubagent(
   params: LaunchSubagentParams,
-  ctx: { sessionManager: { getSessionFile(): string | null | undefined; getSessionId(): string; getSessionDir(): string }; cwd: string },
+  ctx: ExtensionContext,
   options?: { surface?: string },
 ): Promise<RunningSubagent> {
   const startTime = Date.now();
   const id = Math.random().toString(16).slice(2, 10);
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null;
-  const effectiveModel = params.model ?? agentDefs?.model;
+  const modelResolution = agentDefs?.cli === "claude"
+    ? { model: params.model ?? agentDefs.model, unavailable: [] }
+    : resolveConfiguredSubagentModel({
+        explicit: params.model,
+        role: params.agent,
+        profile: agentDefs?.model,
+        ctx,
+      });
+  if (modelResolution.unavailable.length > 0) {
+    ctx.ui.notify(
+      `Unavailable subagent model${modelResolution.unavailable.length === 1 ? "" : "s"}: ${modelResolution.unavailable.join(", ")}. Falling back to ${modelResolution.model ?? "Pi's default"}.`,
+      "warning",
+    );
+  }
+  const effectiveModel = modelResolution.model;
   const effectiveTools = agentDefs?.tools;
   const effectiveSkills = agentDefs?.skills;
   const effectiveThinking = agentDefs?.thinking;
@@ -2325,6 +2429,52 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         };
       },
     });
+
+  pi.registerCommand("subagent-setup", {
+    description: "Configure global or trusted-project model defaults for bundled subagents",
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) {
+        ctx.ui.notify("/subagent-setup requires an interactive or RPC UI.", "error");
+        return;
+      }
+
+      const scope = await ctx.ui.select("Save subagent model defaults", ["global", "project"]);
+      if (scope !== "global" && scope !== "project") return;
+      if (scope === "project" && !ctx.isProjectTrusted()) {
+        ctx.ui.notify("Project model defaults require a trusted project.", "error");
+        return;
+      }
+
+      const choices = [INHERIT_PARENT_MODEL, ...availableModelRefs(ctx)];
+      const selections: SetupSelections = {};
+      for (const role of BUNDLED_AGENT_ROLES) {
+        const selection = await ctx.ui.select(`Model for ${role}`, choices);
+        if (selection === undefined) {
+          ctx.ui.notify("Subagent model setup cancelled; no changes were written.", "info");
+          return;
+        }
+        selections[role] = selection === INHERIT_PARENT_MODEL ? null : selection;
+      }
+
+      const result = saveModelSetup({
+        scope,
+        selections,
+        homeDirectory: homedir(),
+        cwd: ctx.cwd,
+        trustedProject: ctx.isProjectTrusted(),
+      });
+      if (!result.ok) {
+        ctx.ui.notify(
+          result.reason === "untrusted-project"
+            ? "Project model defaults require a trusted project."
+            : "Subagent model setup cancelled; no changes were written.",
+          result.reason === "untrusted-project" ? "error" : "info",
+        );
+        return;
+      }
+      ctx.ui.notify(`Saved subagent model defaults to ${result.path}`, "info");
+    },
+  });
 
   // /subagent command — spawn a subagent by name
   pi.registerCommand("subagent", {

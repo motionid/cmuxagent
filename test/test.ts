@@ -1819,9 +1819,10 @@ describe("commands", () => {
     assert.match(sentUserMessages[0], /map the auth code/);
   });
 
-  it("does not register the removed /iterate or /plan commands", () => {
+  it("registers /subagent-setup without restoring removed workflow commands", () => {
     const { api, registeredCommands } = createMockExtensionApi();
     (subagentsModule as any).default(api);
+    assert.ok(registeredCommands.find((c) => c.name === "subagent-setup"));
     assert.equal(registeredCommands.find((c) => c.name === "iterate"), undefined);
     assert.equal(registeredCommands.find((c) => c.name === "plan"), undefined);
   });
@@ -2839,5 +2840,142 @@ describe("cmux.ts", () => {
       // Inside single quotes, everything is literal
       assert.ok(escaped.includes("$world"));
     });
+  });
+});
+
+describe("portable model integration", () => {
+  function model(provider: string, id: string) {
+    return { provider, id };
+  }
+
+  function modelContext(options: {
+    cwd: string;
+    trusted?: boolean;
+    scoped?: Array<{ provider: string; id: string }>;
+    available?: Array<{ provider: string; id: string }>;
+    parent?: { provider: string; id: string };
+  }) {
+    return {
+      cwd: options.cwd,
+      model: options.parent ?? model("provider", "parent"),
+      scopedModels: (options.scoped ?? []).map((entry) => ({ model: entry })),
+      modelRegistry: { getAvailable: () => options.available ?? [] },
+      isProjectTrusted: () => options.trusted ?? false,
+    };
+  }
+
+  it("uses the parent model when no explicit, configured, or profile model exists", () => {
+    withTempDir((directory) => {
+      const testApi = (subagentsModule as any).__test__;
+      const result = testApi.resolveConfiguredSubagentModel({
+        role: "scout",
+        ctx: modelContext({
+          cwd: join(directory, "project"),
+          available: [model("provider", "parent")],
+        }),
+        homeDirectory: join(directory, "home"),
+      });
+
+      assert.deepEqual(result, { model: "provider/parent", unavailable: [] });
+    });
+  });
+
+  it("uses an explicit model before configured, profile, and parent models", () => {
+    withTempDir((directory) => {
+      const testApi = (subagentsModule as any).__test__;
+      const homeDirectory = join(directory, "home");
+      const cwd = join(directory, "project");
+      mkdirSync(join(homeDirectory, ".pi", "cmuxagent"), { recursive: true });
+      mkdirSync(join(cwd, ".pi", "cmuxagent"), { recursive: true });
+      writeFileSync(join(homeDirectory, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { scout: "provider/global" } }));
+      writeFileSync(join(cwd, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { scout: "provider/project" } }));
+
+      const result = testApi.resolveConfiguredSubagentModel({
+        explicit: "provider/explicit",
+        role: "scout",
+        profile: "provider/profile",
+        ctx: modelContext({
+          cwd,
+          trusted: true,
+          available: [
+            model("provider", "explicit"),
+            model("provider", "project"),
+            model("provider", "global"),
+            model("provider", "profile"),
+            model("provider", "parent"),
+          ],
+        }),
+        homeDirectory,
+      });
+
+      assert.deepEqual(result, { model: "provider/explicit", unavailable: [] });
+    });
+  });
+
+  it("uses trusted project overrides and ignores untrusted project overrides", () => {
+    withTempDir((directory) => {
+      const testApi = (subagentsModule as any).__test__;
+      const homeDirectory = join(directory, "home");
+      const cwd = join(directory, "project");
+      mkdirSync(join(homeDirectory, ".pi", "cmuxagent"), { recursive: true });
+      mkdirSync(join(cwd, ".pi", "cmuxagent"), { recursive: true });
+      writeFileSync(join(homeDirectory, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { worker: "provider/global" } }));
+      writeFileSync(join(cwd, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { worker: "provider/project" } }));
+      const available = [
+        model("provider", "project"),
+        model("provider", "global"),
+        model("provider", "parent"),
+      ];
+
+      assert.equal(testApi.resolveConfiguredSubagentModel({
+        role: "worker",
+        ctx: modelContext({ cwd, trusted: true, available }),
+        homeDirectory,
+      }).model, "provider/project");
+      assert.deepEqual(testApi.resolveConfiguredSubagentModel({
+        role: "worker",
+        ctx: modelContext({ cwd, trusted: false, available }),
+        homeDirectory,
+      }), { model: "provider/global", unavailable: [] });
+    });
+  });
+
+  it("reports unavailable configured models and falls through to the profile", () => {
+    withTempDir((directory) => {
+      const testApi = (subagentsModule as any).__test__;
+      const homeDirectory = join(directory, "home");
+      const cwd = join(directory, "project");
+      mkdirSync(join(homeDirectory, ".pi", "cmuxagent"), { recursive: true });
+      mkdirSync(join(cwd, ".pi", "cmuxagent"), { recursive: true });
+      writeFileSync(join(homeDirectory, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { researcher: "provider/missing-global" } }));
+      writeFileSync(join(cwd, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { researcher: "provider/missing-project" } }));
+
+      assert.deepEqual(testApi.resolveConfiguredSubagentModel({
+        role: "researcher",
+        profile: "provider/profile",
+        ctx: modelContext({
+          cwd,
+          trusted: true,
+          available: [model("provider", "profile")],
+        }),
+        homeDirectory,
+      }), {
+        model: "provider/profile",
+        unavailable: ["provider/missing-project", "provider/missing-global"],
+      });
+    });
+  });
+
+  it("uses scoped models when present and the registry otherwise", () => {
+    const testApi = (subagentsModule as any).__test__;
+    assert.deepEqual(testApi.availableModelRefs(modelContext({
+      cwd: "/tmp/project",
+      scoped: [model("provider", "scoped-b"), model("provider", "scoped-a")],
+      available: [model("provider", "registry")],
+    })), ["provider/scoped-a", "provider/scoped-b"]);
+    assert.deepEqual(testApi.availableModelRefs(modelContext({
+      cwd: "/tmp/project",
+      available: [model("provider", "registry")],
+    })), ["provider/registry"]);
   });
 });
