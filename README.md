@@ -10,7 +10,7 @@ Async subagents for [Pi](https://github.com/earendil-works/pi), running in visib
 
 Install and configure:
 
-- [pi](https://github.com/badlogic/pi-mono)
+- [pi](https://github.com/earendil-works/pi)
 - [cmux](https://github.com/manaflow-ai/cmux)
 - At least one model provider usable by pi
 

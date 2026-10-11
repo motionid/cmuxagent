@@ -1207,6 +1207,30 @@ function resolveResumeLaunchBehavior(): { autoExit: boolean; interactive: boolea
   return { autoExit: true, interactive: false };
 }
 
+function resolveLaunchModel(
+  params: Pick<LaunchSubagentParams, "agent" | "model">,
+  agentDefs: AgentDefaults | null,
+  ctx: ExtensionContext,
+  homeDirectory?: string,
+): string | undefined {
+  const modelResolution = agentDefs?.cli === "claude"
+    ? { model: params.model ?? agentDefs.model, unavailable: [] }
+    : resolveConfiguredSubagentModel({
+        explicit: params.model,
+        role: params.agent,
+        profile: agentDefs?.model,
+        ctx,
+        homeDirectory,
+      });
+  if (modelResolution.unavailable.length > 0) {
+    ctx.ui.notify(
+      `Unavailable subagent model${modelResolution.unavailable.length === 1 ? "" : "s"}: ${modelResolution.unavailable.join(", ")}. Falling back to ${modelResolution.model ?? "Pi's default"}.`,
+      "warning",
+    );
+  }
+  return modelResolution.model;
+}
+
 export const __test__ = {
   borderLine,
   getShellReadyDelayMs,
@@ -1239,6 +1263,7 @@ export const __test__ = {
   canonicalModelRef,
   availableModelRefs,
   resolveConfiguredSubagentModel,
+  resolveLaunchModel,
   saveModelSetup,
 };
 
@@ -1266,21 +1291,7 @@ async function launchSubagent(
   const id = Math.random().toString(16).slice(2, 10);
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null;
-  const modelResolution = agentDefs?.cli === "claude"
-    ? { model: params.model ?? agentDefs.model, unavailable: [] }
-    : resolveConfiguredSubagentModel({
-        explicit: params.model,
-        role: params.agent,
-        profile: agentDefs?.model,
-        ctx,
-      });
-  if (modelResolution.unavailable.length > 0) {
-    ctx.ui.notify(
-      `Unavailable subagent model${modelResolution.unavailable.length === 1 ? "" : "s"}: ${modelResolution.unavailable.join(", ")}. Falling back to ${modelResolution.model ?? "Pi's default"}.`,
-      "warning",
-    );
-  }
-  const effectiveModel = modelResolution.model;
+  const effectiveModel = resolveLaunchModel(params, agentDefs, ctx);
   const effectiveTools = agentDefs?.tools;
   const effectiveSkills = agentDefs?.skills;
   const effectiveThinking = agentDefs?.thinking;
@@ -2686,4 +2697,3 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   });
 
 }
-// test

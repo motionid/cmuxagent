@@ -2966,6 +2966,42 @@ describe("portable model integration", () => {
     });
   });
 
+  it("warns and uses the fallback selected for launch when configured models are unavailable", () => {
+    withTempDir((directory) => {
+      const testApi = (subagentsModule as any).__test__;
+      const homeDirectory = join(directory, "home");
+      const cwd = join(directory, "project");
+      const notifications: Array<{ message: string; level: string }> = [];
+      mkdirSync(join(homeDirectory, ".pi", "cmuxagent"), { recursive: true });
+      mkdirSync(join(cwd, ".pi", "cmuxagent"), { recursive: true });
+      writeFileSync(join(homeDirectory, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { researcher: "provider/missing-global" } }));
+      writeFileSync(join(cwd, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { researcher: "provider/missing-project" } }));
+      const ctx = {
+        ...modelContext({
+          cwd,
+          trusted: true,
+          available: [model("provider", "profile")],
+        }),
+        ui: {
+          notify(message: string, level: string) {
+            notifications.push({ message, level });
+          },
+        },
+      };
+
+      assert.equal(testApi.resolveLaunchModel(
+        { agent: "researcher" },
+        { model: "provider/profile" },
+        ctx,
+        homeDirectory,
+      ), "provider/profile");
+      assert.deepEqual(notifications, [{
+        message: "Unavailable subagent models: provider/missing-project, provider/missing-global. Falling back to provider/profile.",
+        level: "warning",
+      }]);
+    });
+  });
+
   it("uses scoped models when present and the registry otherwise", () => {
     const testApi = (subagentsModule as any).__test__;
     assert.deepEqual(testApi.availableModelRefs(modelContext({
