@@ -2688,6 +2688,7 @@ describe("cmux.ts", () => {
       "cmuxFocusMatches",
       "shouldRestoreCmuxFocus",
       "shouldRetryMissingCmuxPane",
+      "isCmuxMissingSurfaceError",
     ]) {
       assert.equal(typeof (cmuxSurface as any)[name], "function", `expected ${name} export`);
     }
@@ -2738,6 +2739,14 @@ describe("cmux.ts", () => {
         ),
         "pane:5",
       );
+    });
+  });
+
+  describe("surface close errors", () => {
+    it("recognizes cmux not-found errors as an already-closed surface", () => {
+      assert.equal(cmuxSurface.isCmuxMissingSurfaceError(new Error("Error: not_found: Surface not found")), true);
+      assert.equal(cmuxSurface.isCmuxMissingSurfaceError({ stderr: "Error: not_found: Surface not found" }), true);
+      assert.equal(cmuxSurface.isCmuxMissingSurfaceError(new Error("permission denied")), false);
     });
   });
 

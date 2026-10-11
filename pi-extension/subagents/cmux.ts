@@ -309,14 +309,27 @@ export async function readScreenAsync(surface: string, lines = 50): Promise<stri
   return stdout;
 }
 
+export function isCmuxMissingSurfaceError(error: unknown): boolean {
+  const parts: string[] = [];
+  if (error instanceof Error) parts.push(error.message);
+  if (error && typeof error === "object") {
+    const processError = error as { stdout?: unknown; stderr?: unknown };
+    if (processError.stdout != null) parts.push(String(processError.stdout));
+    if (processError.stderr != null) parts.push(String(processError.stderr));
+  }
+  return parts.some((part) => /not_found:\s*Surface not found/i.test(part));
+}
+
 export function closeSurface(surface: string): void {
   requireCmux();
   if (!cmuxSurfaceExists(surface)) return;
   try {
     execFileSync("cmux", ["close-surface", "--surface", surface], { encoding: "utf8" });
   } catch (error) {
-    // A concurrent user close is already the requested end state. Preserve real
-    // cmux failures when the target still exists.
+    // cmux's identify result can briefly remain stale after a close. Treat its
+    // explicit not-found response as success even if that stale lookup still
+    // claims the surface exists. Preserve all other failures for live targets.
+    if (isCmuxMissingSurfaceError(error)) return;
     if (cmuxSurfaceExists(surface)) throw error;
   }
 }
