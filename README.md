@@ -1,8 +1,8 @@
-# pi-interactive-subagents
+# cmuxagent
 
-Async subagents for [pi](https://github.com/badlogic/pi-mono), running in cmux surfaces. Spawn a sub-agent, keep working in the main session, and get the result steered back when it finishes. Fully non-blocking.
+Async subagents for [Pi](https://github.com/earendil-works/pi), running in visible cmux surfaces. Spawn a subagent, keep working in the parent session, and receive the result automatically when it finishes.
 
-**cmux-only fork.** See [Acknowledgements](#acknowledgements) for the upstream project, which also supports tmux, zellij, and WezTerm.
+**cmux-only fork.** This repository consolidates [amosblomqvist/pi-interactive-subagents](https://github.com/amosblomqvist/pi-interactive-subagents) with the cmuxagent package work. See [Acknowledgements](#acknowledgements) for the full upstream lineage.
 
 ## Quick start
 
@@ -21,19 +21,23 @@ pi --version
 cmux --version
 ```
 
-### 2. Install this local checkout
+### 2. Install cmuxagent
 
-From the repository directory:
+For this local checkout:
 
 ```bash
-cd /Users/sean/pi-interactive-subagents
+cd /Users/sean/Documents/cmuxagent
 npm install
 pi install "$(pwd)"
 ```
 
-This is a user-level installation, so it is available in every pi project. Pi references the checkout directly rather than copying it.
+Or install the current GitHub branch using your existing GitHub credentials:
 
-Confirm the package is registered:
+```bash
+pi install git:github.com/motionid/cmuxagent
+```
+
+A local installation references the checkout directly rather than copying it. Confirm the package is registered:
 
 ```bash
 pi list
@@ -42,7 +46,7 @@ pi list
 The output should include the resolved path:
 
 ```text
-/Users/sean/pi-interactive-subagents
+/Users/sean/Documents/cmuxagent
 ```
 
 ### 3. Resolve a `pi-subagents` conflict
@@ -96,7 +100,7 @@ A second subagent opens as another tab in the same right-side pane.
 The installation points directly at this checkout. After pulling or editing code, start a new pi session or run `/reload`; you do not need to reinstall the package.
 
 ```bash
-cd /Users/sean/pi-interactive-subagents
+cd /Users/sean/Documents/cmuxagent
 git pull
 npm install
 ```
@@ -104,7 +108,7 @@ npm install
 ### Uninstalling
 
 ```bash
-pi remove /Users/sean/pi-interactive-subagents
+pi remove /Users/sean/Documents/cmuxagent
 ```
 
 Then confirm removal with `pi list`.
@@ -127,9 +131,9 @@ Increase the shell startup delay before starting pi:
 export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500
 ```
 
-**A bundled agent cannot authenticate to its model**
+**A configured subagent model is unavailable**
 
-The bundled definitions use models configured in `agents/*.md`. Select models available through your configured pi providers, or create a project/global agent definition as described below.
+cmuxagent warns once, skips unavailable configured models, and falls through to the next source in the precedence chain. Run `/subagent-setup` again or use an explicit model that is available in the parent Pi session.
 
 ## How it works
 
@@ -161,7 +165,7 @@ export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500   # default: 500
 | `subagents_list` | List available agent definitions |
 | `ask_question` | *(sub-agent sessions only)* Ask the orchestrator a question and wait for the reply |
 
-There is also a `/subagent <agent> <task>` command for spawning directly.
+There is also a `/subagent <agent> <task>` command for spawning directly and `/subagent-setup` for persistent bundled-agent model defaults.
 
 ### Spawning
 
@@ -175,7 +179,7 @@ subagent({ agent: "worker", name: "dark-mode", task: "Implement the dark mode to
 | `agent` | string | required | Which agent to spawn (must be known and permitted) |
 | `task` | string | required | Task prompt |
 | `name` | string | agent name | Display name for the pane and widget. Must be unique — duplicates are auto-suffixed (`scout`, `scout-2`, …) |
-| `model` | string | agent's model | Override the model for this spawn |
+| `model` | string | resolved model | Override the model for this spawn |
 | `cwd` | string | agent's `cwd` | Working directory (see [Role folders](#role-folders)) |
 
 ### Messaging
@@ -201,13 +205,42 @@ If the reply arrives while the sub-agent is still mid-turn, it is absorbed into 
 
 ## Bundled agents
 
-| Agent | Model | Tools | Role |
-| ----- | ----- | ----- | ---- |
-| **scout** | `openrouter/z-ai/glm-5.3` | `read`, `grep`, `find`, `ls` | Fast read-only codebase recon |
-| **researcher** | `openrouter/z-ai/glm-5.3` | `web_search`, `web_fetch`, `safe_bash` | Web research, synthesized into a sourced brief |
-| **worker** | `openrouter/z-ai/glm-5.3` | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch` + spawning | General implementer; may spawn `scout` and `researcher` |
+| Agent | Default model | Tools | Role |
+| ----- | ------------- | ----- | ---- |
+| **scout** | Inherit parent | `read`, `grep`, `find`, `ls` | Fast read-only codebase recon |
+| **researcher** | Inherit parent | `web_search`, `web_fetch`, `safe_bash` | Web research, synthesized into a sourced brief |
+| **worker** | Inherit parent | `read`, `write`, `edit`, `bash`, `web_search`, `web_fetch` + spawning | General implementer; may spawn `scout` and `researcher` |
 
-All three are autonomous (`auto-exit: true`) and carry their identity in the system prompt (`system-prompt: append`).
+All three inherit the parent Pi session's model by default, are autonomous (`auto-exit: true`), and carry their identity in the system prompt (`system-prompt: append`).
+
+## Model configuration
+
+Run `/subagent-setup` to choose `Inherit parent model` or one of the models currently available to Pi for each bundled role. The command can save to:
+
+- global configuration: `~/.pi/cmuxagent/config.json`;
+- trusted project configuration: `.pi/cmuxagent/config.json`.
+
+Project configuration is read and written only when Pi reports that the project is trusted. Both files use this shape:
+
+```json
+{
+  "models": {
+    "scout": "provider/model",
+    "researcher": "provider/model",
+    "worker": "provider/model"
+  }
+}
+```
+
+A spawn resolves its model in this exact order:
+
+1. explicit `subagent({ model })` value;
+2. trusted project override;
+3. global override;
+4. a custom profile's explicit `model` field;
+5. the parent session model.
+
+Unavailable candidates produce a warning and are skipped in favor of the next available source. `/subagent-setup` writes only cmuxagent configuration; it never changes Pi's global settings, authentication, credentials, or provider catalogues.
 
 ## Custom agents
 
@@ -304,7 +337,7 @@ Status display is configured via `config.json` in the extension directory (copy 
 
 ## Acknowledgements
 
-Forked from [HazAT/pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents), which originated the subagent architecture, the multi-multiplexer surface layer, and the status widget; its supervision features were inspired by [RepoPrompt](https://repoprompt.com/).
+This cmux-only package is consolidated from [amosblomqvist/pi-interactive-subagents](https://github.com/amosblomqvist/pi-interactive-subagents), itself derived from [HazAT/pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents). The upstream project originated the subagent architecture, multiplexer surface layer, and status widget; its supervision features were inspired by [RepoPrompt](https://repoprompt.com/). Upstream MIT licensing and attribution are retained.
 
 ## License
 
