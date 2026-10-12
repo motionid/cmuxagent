@@ -1264,6 +1264,7 @@ export const __test__ = {
   availableModelRefs,
   resolveConfiguredSubagentModel,
   resolveLaunchModel,
+  launchSubagent,
   saveModelSetup,
 };
 

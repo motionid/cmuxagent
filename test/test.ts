@@ -3011,6 +3011,74 @@ describe("portable model integration", () => {
     });
   });
 
+  it("carries the configured fallback through launch loadout and --model args", async () => {
+    const testApi = (subagentsModule as any).__test__;
+    const directory = createTestDir();
+    const originalEnv = {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+      CMUX_SOCKET_PATH: process.env.CMUX_SOCKET_PATH,
+    };
+    const runningMap = testApi.runningSubagents as Map<string, any>;
+    try {
+      const homeDirectory = join(directory, "home");
+      const cwd = join(directory, "project");
+      const agentDir = join(directory, "agent-config");
+      const binDir = join(directory, "bin");
+      const parentSessionDir = join(directory, "parent-sessions");
+      const parentSessionFile = join(parentSessionDir, "parent.jsonl");
+      const cmuxLog = join(directory, "cmux.log");
+      mkdirSync(join(cwd, ".pi", "cmuxagent"), { recursive: true });
+      mkdirSync(join(agentDir, "agents"), { recursive: true });
+      mkdirSync(binDir, { recursive: true });
+      mkdirSync(parentSessionDir, { recursive: true });
+      writeFileSync(join(cwd, ".pi", "cmuxagent", "config.json"), JSON.stringify({ models: { researcher: "provider/missing-project" } }));
+      writeFileSync(join(agentDir, "agents", "researcher.md"), "---\nmodel: provider/profile\ntools: read\nauto-exit: true\n---\nResearch carefully.\n");
+      writeFileSync(parentSessionFile, `${JSON.stringify({ type: "session", id: "parent" })}\n`);
+      const fakeCmux = join(binDir, "cmux");
+      writeFileSync(fakeCmux, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CMUX_TEST_LOG\"\n", { mode: 0o755 });
+      process.env.PATH = `${binDir}:${originalEnv.PATH ?? ""}`;
+      process.env.HOME = homeDirectory;
+      process.env.PI_CODING_AGENT_DIR = agentDir;
+      process.env.CMUX_SOCKET_PATH = "test-socket";
+      process.env.CMUX_TEST_LOG = cmuxLog;
+      const notifications: Array<{ message: string; level: string }> = [];
+      const ctx = {
+        ...modelContext({ cwd, trusted: true, available: [model("provider", "profile")] }),
+        ui: { notify(message: string, level: string) { notifications.push({ message, level }); } },
+        sessionManager: {
+          getSessionFile: () => parentSessionFile,
+          getSessionId: () => "parent",
+          getSessionDir: () => parentSessionDir,
+        },
+      };
+
+      const running = await testApi.launchSubagent(
+        { name: "Fallback launch", agent: "researcher", task: "Inspect only", cwd },
+        ctx,
+        { surface: "surface:test" },
+      );
+      const loadout = readSubagentLoadout(running.sessionFile);
+      const launchScript = readFileSync(running.launchScriptFile, "utf8");
+      assert.equal(loadout?.model, "provider/profile");
+      assert.match(launchScript, /--model 'provider\/profile'/);
+      assert.deepEqual(notifications, [{
+        message: "Unavailable subagent model: provider/missing-project. Falling back to provider/profile.",
+        level: "warning",
+      }]);
+      assert.match(readFileSync(cmuxLog, "utf8"), /send --surface surface:test/);
+    } finally {
+      runningMap.clear();
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      delete process.env.CMUX_TEST_LOG;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("uses scoped models when present and the registry otherwise", () => {
     const testApi = (subagentsModule as any).__test__;
     assert.deepEqual(testApi.availableModelRefs(modelContext({
