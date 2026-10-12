@@ -163,10 +163,10 @@ for (const backend of backends) {
       const s2 = createTrackedSurface(env, "multi-2");
       await sleep(1500);
 
-      assert.equal(
+      assert.notEqual(
         getSurfacePane(s1),
         getSurfacePane(s2),
-        "subsequent subagents should open as tabs in the shared cmux pane",
+        "each subagent should open in its own cmux split",
       );
 
       const m1 = uniqueId();
@@ -199,7 +199,7 @@ for (const backend of backends) {
       }
     });
 
-    it("recreates the shared pane after its last surface is closed", async () => {
+    it("continues creating independent splits after a surface is closed", async () => {
       const first = createTrackedSurface(env, "stale-pane-first");
       await sleep(500);
       closeSurface(first);

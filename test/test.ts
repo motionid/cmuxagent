@@ -2689,8 +2689,84 @@ describe("cmux.ts", () => {
       "shouldRestoreCmuxFocus",
       "shouldRetryMissingCmuxPane",
       "isCmuxMissingSurfaceError",
+      "isCmuxNoSpaceError",
+      "resetCascadingSplitState",
     ]) {
       assert.equal(typeof (cmuxSurface as any)[name], "function", `expected ${name} export`);
+    }
+  });
+
+  it("cascades splits alternating right then down on the new pane, then tabs when no space", () => {
+    const directory = createTestDir();
+    const binDir = join(directory, "bin");
+    const logFile = join(directory, "cmux.log");
+    const countFile = join(directory, "count");
+    const originalEnv = {
+      PATH: process.env.PATH,
+      CMUX_SOCKET_PATH: process.env.CMUX_SOCKET_PATH,
+      CMUX_SURFACE_ID: process.env.CMUX_SURFACE_ID,
+      CMUX_TEST_LOG: process.env.CMUX_TEST_LOG,
+      CMUX_TEST_COUNT: process.env.CMUX_TEST_COUNT,
+    };
+    try {
+      (cmuxSurface as any).resetCascadingSplitState();
+      mkdirSync(binDir, { recursive: true });
+      const fakeCmux = join(binDir, "cmux");
+      writeFileSync(fakeCmux, [
+        "#!/bin/sh",
+        "printf '%s\\n' \"$*\" >> \"$CMUX_TEST_LOG\"",
+        "case \"$1\" in",
+        "  identify)",
+        "    if [ \"$2\" = \"--surface\" ]; then",
+        "      printf '{\"surface_ref\":\"%s\",\"pane_ref\":\"pane:%s\"}\\n' \"$3\" \"${3#surface:}\"",
+        "    else",
+        "      printf '%s\\n' '{\"focused\":{\"surface_ref\":\"surface:901\",\"pane_ref\":\"pane:901\"}}'",
+        "    fi",
+        "    ;;",
+        "  tree) printf '%s\\n' 'pane:901 pane:902 pane:parent' ;;",
+        "  new-surface) printf '%s\\n' 'surface:903 pane:902' ;;",
+        "  new-split)",
+        "    count=0; test -f \"$CMUX_TEST_COUNT\" && count=$(cat \"$CMUX_TEST_COUNT\")",
+        "    count=$((count + 1)); printf '%s' \"$count\" > \"$CMUX_TEST_COUNT\"",
+        "    if [ \"$count\" -ge 3 ]; then",
+        "      printf 'Error: no_space: No space for new pane\\n' >&2",
+        "      exit 1",
+        "    fi",
+        "    printf 'surface:%s pane:%s\\n' \"$((900 + count))\" \"$((900 + count))\"",
+        "    ;;",
+        "esac",
+        "",
+      ].join("\n"), { mode: 0o755 });
+      process.env.PATH = `${binDir}:${originalEnv.PATH ?? ""}`;
+      process.env.CMUX_SOCKET_PATH = "test-socket";
+      process.env.CMUX_SURFACE_ID = "surface:parent";
+      process.env.CMUX_TEST_LOG = logFile;
+      process.env.CMUX_TEST_COUNT = countFile;
+
+      const s1 = cmuxSurface.createSurface("first");
+      const s2 = cmuxSurface.createSurface("second");
+      const s3 = cmuxSurface.createSurface("third"); // triggers no_space -> tabs in pane:902
+
+      assert.equal(s1, "surface:901");
+      assert.equal(s2, "surface:902");
+      assert.equal(s3, "surface:903");
+
+      const commands = readFileSync(logFile, "utf8").split("\n").filter(Boolean);
+      assert.deepEqual(commands.filter((line) => line.startsWith("new-split")), [
+        "new-split right --focus false --surface surface:parent",
+        "new-split down --focus false --surface surface:901",
+        "new-split right --focus false --surface surface:902",
+      ]);
+      assert.deepEqual(commands.filter((line) => line.startsWith("new-surface")), [
+        "new-surface --type terminal --pane pane:902 --focus false",
+      ]);
+    } finally {
+      (cmuxSurface as any).resetCascadingSplitState();
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 

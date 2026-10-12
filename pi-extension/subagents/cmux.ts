@@ -3,8 +3,8 @@
  *
  * Everything the extension does to a terminal surface goes through this API:
  * create a surface, type a command, read its screen, close it, and poll for
- * exit. The first subagent gets a right-side split; later subagents become tabs
- * in that same pane so the main workspace does not become progressively narrower.
+ * exit. Every subagent gets its own split anchored to the parent Pi surface,
+ * alternating right and down so the layout tiles instead of only narrowing.
  */
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -219,6 +219,17 @@ function createSurfaceInPane(name: string, pane: string): string {
   }
 }
 
+export function isCmuxNoSpaceError(error: unknown): boolean {
+  const parts: string[] = [];
+  if (error instanceof Error) parts.push(error.message);
+  if (error && typeof error === "object") {
+    const processError = error as { stdout?: unknown; stderr?: unknown };
+    if (processError.stdout != null) parts.push(String(processError.stdout));
+    if (processError.stderr != null) parts.push(String(processError.stderr));
+  }
+  return parts.some((part) => /no_space:\s*No space for new pane/i.test(part));
+}
+
 export function cmuxTreeHasPane(tree: string, pane: string): boolean {
   const escaped = pane.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|\\s)${escaped}(?=\\s|$)`, "m").test(tree);
@@ -228,29 +239,62 @@ export function shouldRetryMissingCmuxPane(tree: string | null, pane: string): b
   return tree !== null && !cmuxTreeHasPane(tree, pane);
 }
 
-/** Pane containing subagent tabs; validated before every reuse. */
-let cmuxSubagentPane: string | null = null;
+const SUBAGENT_SPLIT_DIRECTIONS = ["right", "down"] as const;
+
+/**
+ * State for cascading splits:
+ * - lastLiveSurface: surface to split from next
+ * - lastLivePane: pane to put tabs into when no_space
+ * - splitDepth: how many splits have been created in this cascade
+ */
+let lastLiveSurface: string | null = null;
+let lastLivePane: string | null = null;
+let splitDepth = 0;
+
+export function resetCascadingSplitState(): void {
+  lastLiveSurface = null;
+  lastLivePane = null;
+  splitDepth = 0;
+}
+
+export function nextSubagentSplitDirection(index: number): "right" | "down" {
+  return SUBAGENT_SPLIT_DIRECTIONS[index % SUBAGENT_SPLIT_DIRECTIONS.length];
+}
 
 export function createSurface(name: string): string {
   requireCmux();
-  if (cmuxSubagentPane) {
+
+  // Validate lastLiveSurface: if it died, see if lastLivePane is still in tree
+  if (lastLiveSurface && !cmuxSurfaceExists(lastLiveSurface)) {
+    lastLiveSurface = null;
+  }
+  if (lastLivePane) {
     const tree = readCmux(["tree"]);
-    if (tree && cmuxTreeHasPane(tree, cmuxSubagentPane)) {
-      try {
-        return createSurfaceInPane(name, cmuxSubagentPane);
-      } catch (error) {
-        // The last tab can be closed after the tree check but before new-surface.
-        // Retry as a fresh split only when that pane actually disappeared.
-        const currentTree = readCmux(["tree"]);
-        if (!shouldRetryMissingCmuxPane(currentTree, cmuxSubagentPane)) throw error;
-      }
+    if (!tree || !cmuxTreeHasPane(tree, lastLivePane)) {
+      lastLivePane = null;
     }
-    cmuxSubagentPane = null;
   }
 
-  const child = createSplit(name, "right", process.env.CMUX_SURFACE_ID);
-  cmuxSubagentPane = child.paneRef ?? null;
-  return child.surface;
+  // Anchor target: start from parent surface if no live split exists
+  const anchorSurface = lastLiveSurface ?? process.env.CMUX_SURFACE_ID;
+  const direction = nextSubagentSplitDirection(splitDepth);
+
+  try {
+    const child = createSplit(name, direction, anchorSurface);
+    lastLiveSurface = child.surface;
+    if (child.paneRef) {
+      lastLivePane = child.paneRef;
+    }
+    splitDepth += 1;
+    return child.surface;
+  } catch (error) {
+    if (isCmuxNoSpaceError(error) && lastLivePane) {
+      // No more room to split: fall back to generating tabs in the final pane
+      const tabSurface = createSurfaceInPane(name, lastLivePane);
+      return tabSurface;
+    }
+    throw error;
+  }
 }
 
 export function createSurfaceSplit(

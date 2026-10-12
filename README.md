@@ -89,11 +89,11 @@ In pi, run:
 Expected behavior:
 
 1. A pane opens on the right without taking keyboard focus.
-2. The scout runs in a named cmux tab in that pane.
+2. The scout runs in its own named cmux split.
 3. Its status appears above the main pi editor.
 4. The result returns to the main session automatically.
 
-A second subagent opens as another tab in the same right-side pane.
+A second subagent splits vertically (down) on that new pane; further subagents alternate horizontally and vertically across the cascade. When cmux runs out of space to split further, subsequent subagents automatically open as tabs in that final pane.
 
 ### Updating
 
@@ -137,7 +137,7 @@ cmuxagent warns once, skips unavailable configured models, and falls through to 
 
 ## How it works
 
-`subagent()` returns immediately. The first sub-agent creates a right split off the parent pi surface; later sub-agents open as tabs in that same pane. Surface creation preserves keyboard focus. A live widget above the input tracks every running sub-agent, and when one finishes, its result is steered into the main session as a notification that triggers a new turn.
+`subagent()` returns immediately. Sub-agents open in a cascading split layout: the first splits right from the parent pane, the next splits down on that pane, then right, then down. When the screen runs out of space for further splits, subsequent sub-agents open as tabs in the final pane. Surface creation preserves keyboard focus. A live widget above the input tracks every running sub-agent, and when one finishes, its result is steered into the main session as a notification that triggers a new turn.
 
 ```
 ╭─ Subagents ──────────────────────────── 2 running ─╮
@@ -148,7 +148,7 @@ cmuxagent warns once, skips unavailable configured models, and falls through to 
 
 Spawn several in parallel — they run concurrently and steer results back independently as each finishes.
 
-cmux manages the split layout. Closing one sub-agent tab leaves the shared sub-agent pane available to the remaining tabs; if that pane disappears, the next spawn creates a fresh right split.
+cmux manages the split layout. Each sub-agent's split or tab closes automatically when it finishes.
 
 If your shell startup is slow and launch commands get dropped before the prompt is ready, raise the delay:
 
