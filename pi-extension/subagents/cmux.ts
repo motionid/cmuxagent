@@ -324,7 +324,7 @@ export function closeSurface(surface: string): void {
   requireCmux();
   if (!cmuxSurfaceExists(surface)) return;
   try {
-    execFileSync("cmux", ["close-surface", "--surface", surface], { encoding: "utf8" });
+    execFileSync("cmux", ["close-surface", "--surface", surface, "--force"], { encoding: "utf8" });
   } catch (error) {
     // cmux's identify result can briefly remain stale after a close. Treat its
     // explicit not-found response as success even if that stale lookup still

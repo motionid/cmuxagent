@@ -42,7 +42,10 @@ if (backends.length === 0) {
 }
 
 for (const backend of backends) {
-  describe(`subagent-lifecycle [${backend}]`, { timeout: PI_TIMEOUT * 3 }, () => {
+  // Seven serial tests each have a PI_TIMEOUT-scale model interaction. Keep the
+  // suite budget above their combined per-test budget so a slow cmux run is not
+  // cancelled while every individual test is still within its own limit.
+  describe(`subagent-lifecycle [${backend}]`, { timeout: PI_TIMEOUT * 8 }, () => {
     let env: TestEnv;
 
     before(() => {
